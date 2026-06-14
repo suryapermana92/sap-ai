@@ -1,0 +1,347 @@
+{
+  "info": {
+    "_postman_id": "d3c5f3d0-8e4a-4f8f-9c6a-001122334455",
+    "name": "SAP Business One Service Layer - Minimal",
+    "description": "Minimal SAP Business One Service Layer Collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://localhost:50000/b1s/v2"
+    },
+    {
+      "key": "companyDB",
+      "value": "SBODemoUS"
+    },
+    {
+      "key": "username",
+      "value": "manager"
+    },
+    {
+      "key": "password",
+      "value": "1234"
+    },
+    {
+      "key": "sessionId",
+      "value": ""
+    },
+    {
+      "key": "cardCode",
+      "value": "C20000"
+    },
+    {
+      "key": "itemCode",
+      "value": "TEST001"
+    },
+    {
+      "key": "docEntry",
+      "value": "1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"CompanyDB\": \"{{companyDB}}\",\n  \"UserName\": \"{{username}}\",\n  \"Password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/Login",
+              "host": ["{{baseUrl}}"],
+              "path": ["Login"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if(json.SessionId){",
+                  "    pm.collectionVariables.set('sessionId', json.SessionId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "B1SESSION={{sessionId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/Logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["Logout"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Metadata",
+      "item": [
+        {
+          "name": "Get Metadata",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/$metadata",
+              "host": ["{{baseUrl}}"],
+              "path": ["$metadata"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Business Partners",
+      "item": [
+        {
+          "name": "Get Business Partners",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/BusinessPartners",
+              "host": ["{{baseUrl}}"],
+              "path": ["BusinessPartners"]
+            }
+          }
+        },
+        {
+          "name": "Get Business Partner By Code",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/BusinessPartners('{{cardCode}}')",
+              "host": ["{{baseUrl}}"],
+              "path": ["BusinessPartners('{{cardCode}}')"]
+            }
+          }
+        },
+        {
+          "name": "Create Business Partner",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"CardCode\": \"{{cardCode}}\",\n  \"CardName\": \"Demo Customer\",\n  \"CardType\": \"cCustomer\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/BusinessPartners",
+              "host": ["{{baseUrl}}"],
+              "path": ["BusinessPartners"]
+            }
+          }
+        },
+        {
+          "name": "Update Business Partner",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"CardName\": \"Demo Customer Updated\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/BusinessPartners('{{cardCode}}')",
+              "host": ["{{baseUrl}}"],
+              "path": ["BusinessPartners('{{cardCode}}')"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Items",
+      "item": [
+        {
+          "name": "Get Items",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/Items",
+              "host": ["{{baseUrl}}"],
+              "path": ["Items"]
+            }
+          }
+        },
+        {
+          "name": "Create Item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ItemCode\": \"{{itemCode}}\",\n  \"ItemName\": \"Test Item\",\n  \"ItemsGroupCode\": 100\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/Items",
+              "host": ["{{baseUrl}}"],
+              "path": ["Items"]
+            }
+          }
+        },
+        {
+          "name": "Update Item",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ItemName\": \"Test Item Updated\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/Items('{{itemCode}}')",
+              "host": ["{{baseUrl}}"],
+              "path": ["Items('{{itemCode}}')"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sales Orders",
+      "item": [
+        {
+          "name": "Create Sales Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"CardCode\": \"{{cardCode}}\",\n  \"DocumentLines\": [\n    {\n      \"ItemCode\": \"{{itemCode}}\",\n      \"Quantity\": 1,\n      \"UnitPrice\": 100\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/Orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["Orders"]
+            }
+          }
+        },
+        {
+          "name": "Get Sales Order",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/Orders({{docEntry}})",
+              "host": ["{{baseUrl}}"],
+              "path": ["Orders({{docEntry}})"]
+            }
+          }
+        },
+        {
+          "name": "Cancel Sales Order",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/Orders({{docEntry}})/Cancel",
+              "host": ["{{baseUrl}}"],
+              "path": ["Orders({{docEntry}})", "Cancel"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "OData Examples",
+      "item": [
+        {
+          "name": "Filter Customers",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/BusinessPartners?$filter=CardType eq 'cCustomer'",
+              "host": ["{{baseUrl}}"],
+              "path": ["BusinessPartners"],
+              "query": [
+                {
+                  "key": "$filter",
+                  "value": "CardType eq 'cCustomer'"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Select Fields",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/BusinessPartners?$select=CardCode,CardName",
+              "host": ["{{baseUrl}}"],
+              "path": ["BusinessPartners"],
+              "query": [
+                {
+                  "key": "$select",
+                  "value": "CardCode,CardName"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Top 10 Orders",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/Orders?$top=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["Orders"],
+              "query": [
+                {
+                  "key": "$top",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
