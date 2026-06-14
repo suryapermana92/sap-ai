@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { env } from "../config/env.js";
+import { renderPdfToPngs } from "./pdfRenderer.js";
 
 const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
@@ -29,18 +30,40 @@ export interface ExtractedPOData {
   rawText?: string;
 }
 
-const SYSTEM_PROMPT = `You are an expert document analyzer specialized in Purchase Orders (PO).
+const SYSTEM_PROMPT = `You are an expert document analyzer specialized in Purchase Orders (PO) from Indonesian manufacturing customers.
 Analyze the provided document content and determine if it is a Purchase Order.
+
+CRITICAL — DO NOT HALLUCINATE:
+- Transcribe numbers and reference codes character-by-character from what you actually see in the document. Do not autocomplete, do not guess, do not "round" digits, do not infer values that look similar to ones you've seen before.
+- If you are uncertain about a digit (e.g. scanned document, low resolution, smudged ink), return null for that field rather than guessing. A null is much better than a wrong number — wrong numbers cause real financial damage downstream when they hit SAP.
+- Especially for the offer sheet / quotation reference: read each digit one at a time. Do NOT default to "0125" or any number you may have seen in another document — every PO has its own reference.
+
+CRITICAL — offerSheetNumber rules:
+- offerSheetNumber is OUR (ADPI / Alpha Delta Polimerz Indonesia) quotation reference that the customer cites in their PO.
+- It ALWAYS matches the regex: ^\\d{3,4}/ADPI/OS/\\d{2}/\\d{4}$  (e.g. "0125/ADPI/OS/04/2026", "0130/ADPI/OS/04/2026").
+- It can appear ANYWHERE in the document (any page, header, footer, body, notes/catatan section). Search the entire document, including the last page and any small print.
+- It may be labelled as: "QUOTATION", "Quotation No", "Ref Quotation", "Reference", "OFFER SHEET", "No. Penawaran", "No Penawaran", "Catatan", or it may appear with no label at all.
+- DO NOT confuse it with the customer's own PO number (poNumber). poNumber is whatever the customer calls their document (e.g. "PO2-2026/E/010/RMID", "260405070", "No. OP: 260405070"). poNumber and offerSheetNumber are different fields.
+- If no string matching the ADPI offer-sheet regex exists in the document, return offerSheetNumber: null. Never substitute the customer's PO number, internal codes, or any other reference.
+- If you can see that an offer sheet reference is present but cannot confidently read every digit (low scan quality), return null rather than guessing the digits.
+- DO NOT default to "0125" or any specific prefix. The first 3-4 digits vary per quotation (e.g. 0125, 0130, 0247, 1023). Read what is actually printed; do not autocomplete based on a prior or "typical" value.
+
+OFFER SHEET TRANSCRIPTION PROTOCOL:
+When you find an offer sheet reference in the document, before writing it into offerSheetNumber:
+1. Locate the literal text in the image/PDF.
+2. Read each character in order, left to right: digit, digit, digit, [digit?], /, A, D, P, I, /, O, S, /, digit, digit, /, digit, digit, digit, digit.
+3. Verify the prefix digits one at a time — do not assume them. If any digit is ambiguous (could be 0/8, 3/5/6/8, 1/7, etc.), return null for offerSheetNumber.
+4. Only emit the value if you are confident every single digit is correctly transcribed.
 
 If it IS a Purchase Order, extract the following fields in JSON format:
 - isPurchaseOrder: boolean (true)
 - confidence: number (0-1)
-- customerName: string
+- customerName: string (the buyer issuing the PO, not ADPI)
 - customerCode: string (if available)
-- poNumber: string
+- poNumber: string (the customer's own PO / OP / Order number)
 - poDate: string (ISO format)
 - deliveryDate: string (ISO format, if available)
-- offerSheetNumber: string (if present, format like XXXX/ADPI/OS/MM/YYYY. This is a reference number to an Offer Sheet / Quotation)
+- offerSheetNumber: string or null (see CRITICAL rules above)
 - items: array of objects with itemCode, description, quantity, unitPrice, uom
 - totalAmount: number
 - currency: string
@@ -48,7 +71,7 @@ If it IS a Purchase Order, extract the following fields in JSON format:
 - billToAddress: string
 - paymentTerms: string
 - notes: string
-- rawText: string (cleaned text content)
+- rawText: string (cleaned text content, include ALL pages so the offer sheet regex can be re-verified downstream)
 
 If it is NOT a Purchase Order:
 - isPurchaseOrder: boolean (false)
@@ -61,6 +84,81 @@ export interface AttachmentInput {
   filename: string;
   mimeType: string;
   data: Buffer;
+}
+
+// ADPI Offer Sheet reference always matches this shape, e.g. "0125/ADPI/OS/04/2026".
+const OFFER_SHEET_REGEX = /\b\d{3,4}\/ADPI\/OS\/\d{2}\/\d{4}\b/i;
+
+export function findOfferSheetInText(text: string | undefined | null): string | undefined {
+  if (!text) return undefined;
+  const match = text.match(OFFER_SHEET_REGEX);
+  return match ? match[0].toUpperCase() : undefined;
+}
+
+function isValidOfferSheet(value: string | undefined | null): boolean {
+  return !!value && OFFER_SHEET_REGEX.test(value);
+}
+
+// gpt-4o vision misreads scanned PDFs at its internal low-DPI rasterization (it
+// hallucinated 0125 for ZEBRA when the real value was 0130). Rendering to 300 DPI PNG
+// before sending eliminates that class of error. If pdftoppm (poppler) is unavailable,
+// we fall back to sending the raw PDF — degraded accuracy, but still functional.
+//
+// Returns the OpenAI `content` parts to append to a user message, plus a human-readable
+// label list for logging.
+async function buildVisionParts(attachments: AttachmentInput[]): Promise<{ parts: any[]; labels: string[] }> {
+  const parts: any[] = [];
+  const labels: string[] = [];
+
+  for (const att of attachments) {
+    if (!att.data || att.data.length === 0 || att.data.length > MAX_ATTACHMENT_BYTES) {
+      console.warn(
+        `[openai] skipped attachment "${att.filename}" (${att.data?.length || 0} bytes, ${att.mimeType})`
+      );
+      continue;
+    }
+
+    const mime = att.mimeType.toLowerCase();
+
+    if (mime.includes("pdf")) {
+      const pages = await renderPdfToPngs(att.data, 300);
+      if (pages.length > 0) {
+        for (const page of pages) {
+          if (page.data.length > MAX_ATTACHMENT_BYTES) {
+            console.warn(
+              `[openai] skipped rendered page ${page.pageNumber} of "${att.filename}" (${page.data.length} bytes)`
+            );
+            continue;
+          }
+          parts.push({
+            type: "image_url",
+            image_url: { url: `data:image/png;base64,${page.data.toString("base64")}` },
+          });
+          labels.push(`${att.filename} page ${page.pageNumber} (${(page.data.length / 1024).toFixed(0)} KB, png@300dpi)`);
+        }
+        continue;
+      }
+      // Fallback: pdftoppm unavailable or failed — send the raw PDF.
+      parts.push({
+        type: "file",
+        file: {
+          filename: att.filename || "document.pdf",
+          file_data: `data:application/pdf;base64,${att.data.toString("base64")}`,
+        },
+      });
+      labels.push(`${att.filename} (${(att.data.length / 1024).toFixed(0)} KB, raw pdf — RENDER FALLBACK)`);
+    } else if (mime.startsWith("image/")) {
+      parts.push({
+        type: "image_url",
+        image_url: { url: `data:${att.mimeType};base64,${att.data.toString("base64")}` },
+      });
+      labels.push(`${att.filename} (${(att.data.length / 1024).toFixed(0)} KB, image)`);
+    } else {
+      console.warn(`[openai] attachment "${att.filename}" (${att.mimeType}) not sent to model (unsupported type)`);
+    }
+  }
+
+  return { parts, labels };
 }
 
 // Skip attachments larger than this to avoid oversized API payloads (~32MB base64).
@@ -133,11 +231,17 @@ export async function analyzeAttachmentsForPO(
     }
 
     try {
-      const mime = att.mimeType.toLowerCase();
       const userContent: any[] = [
         {
           type: "text",
-          text: `Analyze the attached document and determine if it is a Purchase Order (PO). If it is a PO, also look for an "Offer Sheet" reference number (format: XXXX/ADPI/OS/MM/YYYY).
+          text: `Analyze the attached document and determine if it is a Purchase Order (PO) issued to ADPI (Alpha Delta Polimerz Indonesia).
+
+CRITICAL — DO NOT HALLUCINATE digits. Transcribe reference codes character-by-character from what you actually see. If you cannot confidently read every digit (low-resolution scan, smudge, faint print), return null for that field rather than guessing. A wrong number causes real financial damage in SAP. Never default to "0125" or any number you may have seen in another document.
+
+Then extract:
+- poNumber: the CUSTOMER's own PO / OP / Order number (e.g. "PO2-2026/E/010/RMID", "260405070"). This is whatever the customer labels their document.
+- offerSheetNumber: ADPI's quotation reference cited in the PO. It MUST match the regex ^\\d{3,4}/ADPI/OS/\\d{2}/\\d{4}$ (e.g. "0125/ADPI/OS/04/2026"). Search ALL pages, including footers, notes/catatan sections, and small print. It may appear under labels like "QUOTATION", "Ref Quotation", "OFFER SHEET", "No. Penawaran", "Catatan", or with no label. If no string matches the regex anywhere in the document, return null. NEVER substitute the customer's PO number. If the reference is visible but the digits are hard to read, return null — do not guess.
+- customerName: the buyer (not ADPI).
 
 Respond ONLY with JSON:
 {
@@ -152,21 +256,8 @@ No markdown.`,
         },
       ];
 
-      const base64 = att.data.toString("base64");
-      if (mime.includes("pdf")) {
-        userContent.push({
-          type: "file",
-          file: {
-            filename: att.filename || "document.pdf",
-            file_data: `data:application/pdf;base64,${base64}`,
-          },
-        });
-      } else if (mime.startsWith("image/")) {
-        userContent.push({
-          type: "image_url",
-          image_url: { url: `data:${att.mimeType};base64,${base64}` },
-        });
-      } else {
+      const { parts, labels } = await buildVisionParts([att]);
+      if (parts.length === 0) {
         results.push({
           filename: att.filename,
           isPurchaseOrder: false,
@@ -175,6 +266,8 @@ No markdown.`,
         });
         continue;
       }
+      userContent.push(...parts);
+      console.log(`[analyzeAttachmentsForPO] ${att.filename}: ${labels.join(", ")}`);
 
       const response = await openai.chat.completions.create({
         model: "gpt-4o",
@@ -190,12 +283,20 @@ No markdown.`,
       const jsonStr = raw.replace(/```json\n?|\n?```/g, "").trim();
       const parsed = JSON.parse(jsonStr);
 
+      const modelOfferSheet = isValidOfferSheet(parsed.offerSheetNumber)
+        ? String(parsed.offerSheetNumber).toUpperCase()
+        : undefined;
+      // Safety net: if the model missed it, scan its own JSON for the ADPI pattern.
+      const fallbackOfferSheet = modelOfferSheet
+        ? undefined
+        : findOfferSheetInText(JSON.stringify(parsed));
+
       results.push({
         filename: att.filename,
         isPurchaseOrder: !!parsed.isPurchaseOrder,
         confidence: Number(parsed.confidence) || 0,
         reason: parsed.reason || "",
-        offerSheetNumber: parsed.offerSheetNumber || undefined,
+        offerSheetNumber: modelOfferSheet || fallbackOfferSheet,
         poNumber: parsed.poNumber || undefined,
         customerName: parsed.customerName || undefined,
       });
@@ -226,44 +327,14 @@ export async function analyzeDocument(
       },
     ];
 
-    // Attach the original files so the model can read the actual document
-    // content (gpt-4o extracts both text and page images, handling scanned PDFs).
-    const sentToModel: string[] = [];
-    for (const att of attachments) {
-      if (!att.data || att.data.length === 0 || att.data.length > MAX_ATTACHMENT_BYTES) {
-        console.warn(
-          `[analyzeDocument] skipped attachment "${att.filename}" (${att.data?.length || 0} bytes, ${att.mimeType})`
-        );
-        continue;
-      }
-      const mime = att.mimeType.toLowerCase();
-      const base64 = att.data.toString("base64");
-
-      if (mime.includes("pdf")) {
-        userContent.push({
-          type: "file",
-          file: {
-            filename: att.filename || "document.pdf",
-            file_data: `data:application/pdf;base64,${base64}`,
-          },
-        });
-        sentToModel.push(`${att.filename} (${(att.data.length / 1024).toFixed(0)} KB, pdf)`);
-      } else if (mime.startsWith("image/")) {
-        userContent.push({
-          type: "image_url",
-          image_url: { url: `data:${att.mimeType};base64,${base64}` },
-        });
-        sentToModel.push(`${att.filename} (${(att.data.length / 1024).toFixed(0)} KB, image)`);
-      } else {
-        console.warn(
-          `[analyzeDocument] attachment "${att.filename}" (${att.mimeType}) not sent to model (unsupported type)`
-        );
-      }
-    }
+    // PDFs are rendered to 300dpi PNG pages first; image attachments pass through.
+    // See pdfRenderer.ts for the rationale (raw-PDF vision read hallucinates digits).
+    const { parts, labels } = await buildVisionParts(attachments);
+    userContent.push(...parts);
 
     console.log(
-      sentToModel.length > 0
-        ? `[analyzeDocument] sent ${sentToModel.length} attachment(s) to gpt-4o: ${sentToModel.join(", ")}`
+      labels.length > 0
+        ? `[analyzeDocument] sent ${labels.length} vision part(s) to gpt-4o: ${labels.join(", ")}`
         : `[analyzeDocument] no attachments sent to gpt-4o (text-only analysis)`
     );
 
@@ -291,6 +362,18 @@ export async function analyzeDocument(
       };
     }
 
+    const modelOfferSheet = isValidOfferSheet(parsed.offerSheetNumber)
+      ? String(parsed.offerSheetNumber).toUpperCase()
+      : undefined;
+    // Safety net: re-scan the source text and the model's own output for the ADPI offer-sheet pattern.
+    // Order: model answer (if valid) → upstream extracted text → notes/rawText/raw JSON.
+    const fallbackOfferSheet = modelOfferSheet
+      ? undefined
+      : findOfferSheetInText(content) ||
+        findOfferSheetInText(parsed.rawText) ||
+        findOfferSheetInText(parsed.notes) ||
+        findOfferSheetInText(JSON.stringify(parsed));
+
     return {
       isPurchaseOrder: true,
       confidence: parsed.confidence || 0.8,
@@ -299,7 +382,7 @@ export async function analyzeDocument(
       poNumber: parsed.poNumber,
       poDate: parsed.poDate,
       deliveryDate: parsed.deliveryDate,
-      offerSheetNumber: parsed.offerSheetNumber,
+      offerSheetNumber: modelOfferSheet || fallbackOfferSheet,
       items: Array.isArray(parsed.items) ? parsed.items.map((item: any) => ({
         itemCode: item.itemCode,
         description: item.description,
