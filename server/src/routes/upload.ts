@@ -41,15 +41,29 @@ router.post("/analyze", upload.array("files", 5), async (req, res) => {
     }))
   );
 
-  // Save to DB as manual upload
+  // Mirror the email processor's logic so manual uploads land in the same
+  // state as email-fetched POs: when AI finds an offer sheet we mark the row
+  // ready for SAP (status='processing' so SAPProcessor picks it up); when it
+  // doesn't, the row goes into 'needs_offer_sheet' so it appears on the
+  // /needs-offer-sheet page for manual entry.
+  let status: string;
+  if (!analysis.isPurchaseOrder) {
+    status = "detected";
+  } else if (analysis.offerSheetNumber) {
+    status = "processing";
+  } else {
+    status = "needs_offer_sheet";
+  }
+
   const poResult = await db.insert(purchaseOrders).values({
     emailAccountId: 0, // manual upload
-    emailMessageId: "manual-upload",
+    emailMessageId: `manual-upload-${Date.now()}`,
     senderEmail: "manual@upload.com",
     subject: files.map((f) => f.originalname).join(", "),
     receivedAt: new Date(),
-    status: analysis.isPurchaseOrder ? "reviewed" : "detected",
+    status,
     confidence: analysis.confidence,
+    offerSheetNumber: analysis.offerSheetNumber || null,
     aiAnalysis: JSON.stringify({ fullText: fullText.substring(0, 10000) }),
     extractedData: JSON.stringify(analysis),
   }).returning();
