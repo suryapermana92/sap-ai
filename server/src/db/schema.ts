@@ -77,3 +77,28 @@ export const activityLogs = sqliteTable("activity_logs", {
   details: text("details"), // JSON string
   createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 });
+
+export const poTemplates = sqliteTable("po_templates", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  description: text("description"),
+  customerName: text("customer_name"),
+  senderEmail: text("sender_email"),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  samplePdfPath: text("sample_pdf_path"),
+  createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+});
+
+export const poTemplateRegions = sqliteTable("po_template_regions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  templateId: integer("template_id").notNull(),
+  fieldName: text("field_name").notNull(), // e.g., "poNumber", "offerSheetNumber", "customerName", "items"
+  pageNumber: integer("page_number").notNull().default(1),
+  x: real("x").notNull(), // relative coordinates 0-1
+  y: real("y").notNull(),
+  width: real("width").notNull(),
+  height: real("height").notNull(),
+  prompt: text("prompt"), // optional custom prompt for this region
+  createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+});

@@ -16,17 +16,21 @@ router.post("/analyze", upload.array("files", 5), async (req, res) => {
   }
 
   const combinedTexts: string[] = [];
-  const savedAttachments: Array<{ filename: string; contentType: string; size: number }> = [];
+  const savedAttachments: Array<{ filename: string; contentType: string; size: number; content: string | null }> = [];
 
   for (const file of files) {
     const text = await extractTextFromBuffer(file.buffer, file.mimetype);
     if (text) {
       combinedTexts.push(`--- File: ${file.originalname} ---\n${text}`);
     }
+    // Persist PDF bytes (base64) so the file can be re-rendered later for
+    // template annotation on the Templates page.
+    const isPdf = file.mimetype.toLowerCase().includes("pdf");
     savedAttachments.push({
       filename: file.originalname,
       contentType: file.mimetype,
       size: file.size,
+      content: isPdf ? file.buffer.toString("base64") : null,
     });
   }
 
@@ -76,6 +80,7 @@ router.post("/analyze", upload.array("files", 5), async (req, res) => {
       filename: att.filename,
       contentType: att.contentType,
       size: att.size,
+      content: att.content,
     });
   }
 

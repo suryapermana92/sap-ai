@@ -22,11 +22,15 @@ let pdftoppmAvailableCache: boolean | null = null;
 
 export async function isPdftoppmAvailable(): Promise<boolean> {
   if (pdftoppmAvailableCache !== null) return pdftoppmAvailableCache;
-  pdftoppmAvailableCache = await new Promise<boolean>((resolve) => {
-    const child = spawn("pdftoppm", ["-v"], { stdio: "ignore" });
-    child.on("error", () => resolve(false));
-    child.on("exit", () => resolve(true));
-  });
+  try {
+    pdftoppmAvailableCache = await new Promise<boolean>((resolve) => {
+      const child = spawn("pdftoppm", ["-v"], { stdio: "ignore" });
+      child.on("error", () => resolve(false));
+      child.on("exit", () => resolve(true));
+    });
+  } catch {
+    pdftoppmAvailableCache = false;
+  }
   return pdftoppmAvailableCache;
 }
 

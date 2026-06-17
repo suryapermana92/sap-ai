@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import { env } from "../config/env.js";
 import { renderPdfToPngs } from "./pdfRenderer.js";
+import { buildTemplateHints, getMatchedTemplateForCropping } from "./templateHints.js";
+import { extractRegionsFromPdf } from "./pdfRegionExtractor.js";
 
 const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
@@ -164,6 +166,57 @@ async function buildVisionParts(attachments: AttachmentInput[]): Promise<{ parts
 // Skip attachments larger than this to avoid oversized API payloads (~32MB base64).
 const MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024;
 
+const FIELD_DESCRIPTIONS: Record<string, string> = {
+  poNumber: "the customer's PO / order number",
+  offerSheetNumber: "the ADPI offer-sheet / quotation reference",
+  customerName: "the customer (buyer) name",
+  customerCode: "the customer code",
+  poDate: "the PO date",
+  deliveryDate: "the delivery date",
+  items: "the line-items table — extract EVERY row's itemCode, description, quantity, unitPrice and uom from THIS crop only",
+  totalAmount: "the grand total amount",
+  notes: "notes / comments",
+};
+
+// Crop the marked template regions out of the PDF and append them as focused,
+// high-DPI images so the model reads each field from the exact rectangle the
+// user marked, instead of guessing across the whole page. Requires pdftoppm
+// (poppler); if unavailable, extractRegionsFromPdf returns [] and we silently
+// fall back to the full-page render + textual hints.
+async function buildRegionCropParts(
+  attachments: AttachmentInput[],
+  senderEmail?: string
+): Promise<{ parts: any[]; labels: string[] }> {
+  const parts: any[] = [];
+  const labels: string[] = [];
+
+  const matched = await getMatchedTemplateForCropping(senderEmail);
+  if (!matched) return { parts, labels };
+
+  for (const att of attachments) {
+    if (!att.mimeType.toLowerCase().includes("pdf")) continue;
+    if (!att.data || att.data.length === 0) continue;
+
+    const crops = await extractRegionsFromPdf(att.data, matched.regions);
+    for (const crop of crops) {
+      if (crop.imageData.length > MAX_ATTACHMENT_BYTES) continue;
+      const desc = FIELD_DESCRIPTIONS[crop.fieldName] || crop.fieldName;
+      const note = crop.prompt ? ` Additional note: ${crop.prompt}.` : "";
+      parts.push({
+        type: "text",
+        text: `FOCUSED REGION (template "${matched.name}", field "${crop.fieldName}", page ${crop.pageNumber}): This cropped image contains ${desc}. Read this field primarily from this crop.${note}`,
+      });
+      parts.push({
+        type: "image_url",
+        image_url: { url: `data:image/png;base64,${crop.imageData.toString("base64")}` },
+      });
+      labels.push(`${crop.fieldName} crop p${crop.pageNumber} (${(crop.imageData.length / 1024).toFixed(0)} KB)`);
+    }
+  }
+
+  return { parts, labels };
+}
+
 export async function screenEmailForPO(
   subject: string,
   body: string,
@@ -317,7 +370,8 @@ No markdown.`,
 export async function analyzeDocument(
   content: string,
   filename?: string,
-  attachments: AttachmentInput[] = []
+  attachments: AttachmentInput[] = [],
+  senderEmail?: string
 ): Promise<ExtractedPOData> {
   try {
     const userContent: any[] = [
@@ -338,10 +392,26 @@ export async function analyzeDocument(
         : `[analyzeDocument] no attachments sent to gpt-4o (text-only analysis)`
     );
 
+    // Crop the marked template regions and send them as focused images so the
+    // model reads each field (especially the line-items table) from the exact
+    // rectangle the user marked. Requires poppler; no-ops gracefully without it.
+    const { parts: cropParts, labels: cropLabels } = await buildRegionCropParts(attachments, senderEmail);
+    if (cropParts.length > 0) {
+      userContent.push(...cropParts);
+      console.log(`[analyzeDocument] sent ${cropLabels.length} focused region crop(s): ${cropLabels.join(", ")}`);
+    }
+
+    // Learn from ALL saved templates: inject layout hints so the model knows
+    // where each field typically appears across known customer PO formats.
+    const templateHints = await buildTemplateHints(senderEmail);
+    if (templateHints) {
+      console.log(`[analyzeDocument] applied learned template hints (${templateHints.length} chars)`);
+    }
+
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: SYSTEM_PROMPT + templateHints },
         { role: "user", content: userContent as any },
       ],
       temperature: 0.1,

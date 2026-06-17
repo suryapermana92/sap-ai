@@ -9,6 +9,7 @@ import poRoutes from "./routes/purchaseOrders.js";
 import sapRoutes from "./routes/sap.js";
 import settingsRoutes from "./routes/settings.js";
 import uploadRoutes from "./routes/upload.js";
+import templatesRoutes from "./routes/templates.js";
 import { EmailProcessor, SAPProcessor } from "./services/processor.js";
 
 const app = express();
@@ -101,6 +102,31 @@ try {
     details TEXT,
     created_at INTEGER DEFAULT (strftime('%s', 'now'))
   )`);
+
+  db.run(sql`CREATE TABLE IF NOT EXISTS po_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    customer_name TEXT,
+    sender_email TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    sample_pdf_path TEXT,
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+  )`);
+
+  db.run(sql`CREATE TABLE IF NOT EXISTS po_template_regions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id INTEGER NOT NULL,
+    field_name TEXT NOT NULL,
+    page_number INTEGER NOT NULL DEFAULT 1,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    width REAL NOT NULL,
+    height REAL NOT NULL,
+    prompt TEXT,
+    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+  )`);
 } catch (error) {
   console.error("DB initialization error:", error);
 }
@@ -111,6 +137,7 @@ app.use("/api/purchase-orders", poRoutes);
 app.use("/api/sap", sapRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/upload", uploadRoutes);
+app.use("/api/templates", templatesRoutes);
 
 // Health check
 app.get("/api/health", (_req, res) => {

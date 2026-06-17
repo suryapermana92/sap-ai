@@ -6,6 +6,7 @@ import {
   Upload,
   ClipboardCheck,
   FileQuestion,
+  FileType,
 } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
 import PurchaseOrders from "./pages/PurchaseOrders";
@@ -13,6 +14,7 @@ import PODetail from "./pages/PODetail";
 import SettingsPage from "./pages/Settings";
 import UploadPage from "./pages/Upload";
 import NeedsOfferSheet from "./pages/NeedsOfferSheet";
+import Templates from "./pages/Templates";
 
 function App() {
   return (
@@ -90,6 +92,19 @@ function App() {
             Upload PO
           </NavLink>
           <NavLink
+            to="/templates"
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                isActive
+                  ? "bg-primary-50 text-primary-700"
+                  : "text-gray-700 hover:bg-gray-50"
+              }`
+            }
+          >
+            <FileType size={18} />
+            Templates
+          </NavLink>
+          <NavLink
             to="/settings"
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -118,6 +133,7 @@ function App() {
             <Route path="/needs-offer-sheet" element={<NeedsOfferSheet />} />
             <Route path="/purchase-orders/:id" element={<PODetail />} />
             <Route path="/upload" element={<UploadPage />} />
+            <Route path="/templates" element={<Templates />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </div>

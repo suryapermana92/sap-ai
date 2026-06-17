@@ -14,14 +14,24 @@ router.get("/", async (req, res) => {
 
   const enriched = pos.map((po) => {
     let isPurchaseOrder = false;
+    let extractedOfferSheet: string | null = null;
     try {
-      isPurchaseOrder = po.extractedData
-        ? JSON.parse(po.extractedData).isPurchaseOrder === true
-        : false;
+      if (po.extractedData) {
+        const parsed = JSON.parse(po.extractedData);
+        isPurchaseOrder = parsed.isPurchaseOrder === true;
+        extractedOfferSheet = parsed.offerSheetNumber || null;
+      }
     } catch {
       isPurchaseOrder = false;
     }
-    return { ...po, isPurchaseOrder };
+    // The offer sheet may have been extracted into the JSON but not persisted
+    // to the dedicated column (older records / mismatch). Fall back to the JSON
+    // so the list always shows it when available.
+    return {
+      ...po,
+      isPurchaseOrder,
+      offerSheetNumber: po.offerSheetNumber || extractedOfferSheet,
+    };
   });
 
   // When ?detected=true, only return confirmed purchase orders.

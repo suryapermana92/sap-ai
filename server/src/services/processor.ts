@@ -175,7 +175,8 @@ export class EmailProcessor {
               filename: att.filename,
               mimeType: att.mimeType,
               data: att.data,
-            }))
+            })),
+            msg.from
           );
 
           // Step 4: Determine next status based on offer sheet number
