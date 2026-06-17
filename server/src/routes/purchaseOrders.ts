@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db/index.js";
 import { purchaseOrders, poAttachments, emailAccounts } from "../db/schema.js";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { GmailService } from "../services/email/gmail.js";
 import { ImapService } from "../services/email/imap.js";
 import { analyzeDocument, AttachmentInput } from "../services/openai.js";
@@ -47,7 +47,13 @@ router.get("/:id", async (req, res) => {
     return;
   }
 
-  const attachments = await db.select().from(poAttachments).where(eq(poAttachments.poId, id)).all();
+  // Don't ship the raw `content` base64 to the client (multi-MB per row); the
+  // UI only needs a hasContent flag to decide whether to show a download link.
+  const rawAttachments = await db.select().from(poAttachments).where(eq(poAttachments.poId, id)).all();
+  const attachments = rawAttachments.map(({ content, ...rest }) => ({
+    ...rest,
+    hasContent: !!content,
+  }));
 
   res.json({
     ...po,
@@ -218,6 +224,41 @@ router.post("/:id/reanalyze", async (req, res) => {
     console.error(`Re-analyze failed for PO ${id}:`, error);
     res.status(500).json({ error: error?.message || "Re-analysis failed" });
   }
+});
+
+// Download the original bytes of an attachment. Returns 404 when the row is
+// from before we started persisting `content` (legacy email rows pre-this
+// commit), so the UI can show a "not stored" state instead of a broken file.
+router.get("/:id/attachments/:attId/download", async (req, res) => {
+  const id = Number(req.params.id);
+  const attId = Number(req.params.attId);
+
+  const att = await db
+    .select()
+    .from(poAttachments)
+    .where(and(eq(poAttachments.id, attId), eq(poAttachments.poId, id)))
+    .get();
+
+  if (!att) {
+    res.status(404).json({ error: "Attachment not found" });
+    return;
+  }
+  if (!att.content) {
+    res.status(404).json({ error: "Attachment bytes were not stored for this record" });
+    return;
+  }
+
+  const buffer = Buffer.from(att.content, "base64");
+  // RFC 5987 filename* handles non-ASCII filenames safely; the plain filename
+  // is a fallback for older browsers.
+  const safeFallback = (att.filename || "attachment").replace(/[^\w.\-]+/g, "_");
+  res.setHeader("Content-Type", att.contentType || "application/octet-stream");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${safeFallback}"; filename*=UTF-8''${encodeURIComponent(att.filename || "attachment")}`
+  );
+  res.setHeader("Content-Length", String(buffer.length));
+  res.send(buffer);
 });
 
 router.delete("/:id", async (req, res) => {

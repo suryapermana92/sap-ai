@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Send, AlertCircle, CheckCircle2, XCircle, FileText, ChevronDown, ChevronRight } from "lucide-react";
+import { ArrowLeft, Send, AlertCircle, CheckCircle2, XCircle, FileText, ChevronDown, ChevronRight, Download } from "lucide-react";
 
 interface POItem {
   itemCode?: string;
@@ -50,7 +50,15 @@ interface POData {
     size: number;
     isPoAttachment?: boolean | null;
     aiAnalysis?: string | null;
+    hasContent?: boolean;
   }>;
+}
+
+function formatFileSize(bytes: number | undefined | null): string | null {
+  if (!bytes || bytes <= 0) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export default function PODetail() {
@@ -375,32 +383,56 @@ export default function PODetail() {
         <div className="card mt-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Attachments</h3>
           <div className="space-y-2">
-            {po.attachments.map((att) => (
-              <div key={att.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-white rounded">
-                    <span className="text-xs font-medium text-gray-600">
-                      {att.contentType.split("/")[1]?.toUpperCase() || "FILE"}
-                    </span>
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium text-gray-900">{att.filename}</p>
-                      {att.isPoAttachment === true && (
-                        <span className="status-badge bg-green-100 text-green-800 text-xs">PO</span>
-                      )}
-                      {att.isPoAttachment === false && (
-                        <span className="status-badge bg-gray-100 text-gray-600 text-xs">Not PO</span>
-                      )}
+            {po.attachments.map((att) => {
+              const downloadUrl = `/api/purchase-orders/${po.id}/attachments/${att.id}/download`;
+              const sizeLabel = formatFileSize(att.size);
+              const canDownload = att.hasContent === true;
+              return (
+                <div key={att.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-white rounded">
+                      <span className="text-xs font-medium text-gray-600">
+                        {att.contentType.split("/")[1]?.toUpperCase() || "FILE"}
+                      </span>
                     </div>
-                    <p className="text-xs text-gray-500">{att.contentType}</p>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        {canDownload ? (
+                          <a
+                            href={downloadUrl}
+                            download={att.filename}
+                            className="text-sm font-medium text-primary-600 hover:text-primary-700 hover:underline inline-flex items-center gap-1"
+                          >
+                            {att.filename}
+                            <Download size={12} />
+                          </a>
+                        ) : (
+                          <p className="text-sm font-medium text-gray-500">{att.filename}</p>
+                        )}
+                        {att.isPoAttachment === true && (
+                          <span className="status-badge bg-green-100 text-green-800 text-xs">PO</span>
+                        )}
+                        {att.isPoAttachment === false && (
+                          <span className="status-badge bg-gray-100 text-gray-600 text-xs">Not PO</span>
+                        )}
+                        {!canDownload && (
+                          <span
+                            className="status-badge bg-amber-100 text-amber-800 text-xs"
+                            title="Original file bytes were not saved for this record. Re-fetch the email or re-upload the document to enable download."
+                          >
+                            not stored
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500">{att.contentType}</p>
+                    </div>
                   </div>
+                  {sizeLabel && (
+                    <span className="text-xs text-gray-500">{sizeLabel}</span>
+                  )}
                 </div>
-                {att.size && (
-                  <span className="text-xs text-gray-500">{(att.size / 1024).toFixed(1)} KB</span>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

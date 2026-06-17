@@ -7,6 +7,23 @@ import { analyzeDocument, screenEmailForPO, analyzeAttachmentsForPO } from "./op
 import { extractTextFromBuffer } from "./documentExtractor.js";
 import { SapB1Service } from "./sapB1.js";
 
+// Persist email attachment bytes so the original file can be downloaded from
+// the PO detail page later (lets us debug why an extraction was wrong by
+// inspecting exactly what the AI received). Skip anything over the cap so
+// SQLite doesn't bloat catastrophically on huge attachments.
+const MAX_PERSIST_BYTES = 25 * 1024 * 1024;
+
+function attachmentContentForDb(att: { data?: Buffer | null; filename: string }): string | null {
+  if (!att.data || att.data.length === 0) return null;
+  if (att.data.length > MAX_PERSIST_BYTES) {
+    console.warn(
+      `[processor] not persisting attachment "${att.filename}" (${att.data.length} bytes, > ${MAX_PERSIST_BYTES})`
+    );
+    return null;
+  }
+  return att.data.toString("base64");
+}
+
 export class EmailProcessor {
   private running = false;
   private interval: NodeJS.Timeout | null = null;
@@ -107,6 +124,7 @@ export class EmailProcessor {
                 filename: att.filename,
                 contentType: att.mimeType,
                 size: att.size,
+                content: attachmentContentForDb(att),
                 isPoAttachment: false,
               });
             }
@@ -147,6 +165,7 @@ export class EmailProcessor {
                 filename: att.filename,
                 contentType: att.mimeType,
                 size: att.size,
+                content: attachmentContentForDb(att),
                 isPoAttachment: analysis.isPurchaseOrder,
                 aiAnalysis: JSON.stringify(analysis),
               });
@@ -218,6 +237,7 @@ export class EmailProcessor {
               filename: att.filename,
               contentType: att.mimeType,
               size: att.size,
+              content: attachmentContentForDb(att),
               isPoAttachment: analysis?.isPurchaseOrder ?? false,
               aiAnalysis: analysis ? JSON.stringify(analysis) : null,
             });

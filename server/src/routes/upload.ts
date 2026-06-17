@@ -23,14 +23,21 @@ router.post("/analyze", upload.array("files", 5), async (req, res) => {
     if (text) {
       combinedTexts.push(`--- File: ${file.originalname} ---\n${text}`);
     }
-    // Persist PDF bytes (base64) so the file can be re-rendered later for
-    // template annotation on the Templates page.
-    const isPdf = file.mimetype.toLowerCase().includes("pdf");
+    // Persist bytes (base64) so the original file can be downloaded later
+    // from the PO detail page — useful for template re-annotation and for
+    // debugging why an extraction was wrong. Cap to avoid SQLite bloat.
+    const MAX_PERSIST_BYTES = 25 * 1024 * 1024;
+    const canPersist = file.buffer.length > 0 && file.buffer.length <= MAX_PERSIST_BYTES;
+    if (!canPersist && file.buffer.length > MAX_PERSIST_BYTES) {
+      console.warn(
+        `[upload] not persisting "${file.originalname}" (${file.buffer.length} bytes, > ${MAX_PERSIST_BYTES})`
+      );
+    }
     savedAttachments.push({
       filename: file.originalname,
       contentType: file.mimetype,
       size: file.size,
-      content: isPdf ? file.buffer.toString("base64") : null,
+      content: canPersist ? file.buffer.toString("base64") : null,
     });
   }
 
