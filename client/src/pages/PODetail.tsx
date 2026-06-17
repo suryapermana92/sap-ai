@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Send, AlertCircle, CheckCircle2, XCircle, FileText, ChevronDown, ChevronRight, Download, RefreshCw } from "lucide-react";
+import { ArrowLeft, Send, AlertCircle, CheckCircle2, XCircle, FileText, ChevronDown, ChevronRight, Download, RefreshCw, Upload } from "lucide-react";
 
 interface POItem {
   itemCode?: string;
@@ -73,6 +73,31 @@ export default function PODetail() {
   const [submittingOfferSheet, setSubmittingOfferSheet] = useState(false);
   const [reanalyzing, setReanalyzing] = useState(false);
   const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
+  const [replacingAttId, setReplacingAttId] = useState<number | null>(null);
+  const fileInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+
+  const handleReplaceFile = async (attId: number, file: File) => {
+    if (!po) return;
+    setReplacingAttId(attId);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(
+        `/api/purchase-orders/${po.id}/attachments/${attId}/replace`,
+        { method: "POST", body: fd }
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `Replace failed (${res.status})`);
+      }
+      const r = await fetch(`/api/purchase-orders/${po.id}`);
+      const data = await r.json();
+      setPo(data);
+    } catch (e: any) {
+      alert(e?.message || "Replace failed");
+    }
+    setReplacingAttId(null);
+  };
 
   useEffect(() => {
     fetch(`/api/purchase-orders/${id}`)
@@ -468,9 +493,36 @@ export default function PODetail() {
                       <p className="text-xs text-gray-500">{att.contentType}</p>
                     </div>
                   </div>
-                  {sizeLabel && (
-                    <span className="text-xs text-gray-500">{sizeLabel}</span>
-                  )}
+                  <div className="flex items-center gap-3">
+                    {sizeLabel && (
+                      <span className="text-xs text-gray-500">{sizeLabel}</span>
+                    )}
+                    {!canDownload && (
+                      <>
+                        <input
+                          ref={(el) => {
+                            fileInputRefs.current[att.id] = el;
+                          }}
+                          type="file"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) handleReplaceFile(att.id, f);
+                            e.target.value = "";
+                          }}
+                        />
+                        <button
+                          onClick={() => fileInputRefs.current[att.id]?.click()}
+                          disabled={replacingAttId === att.id}
+                          className="text-xs px-2 py-1 rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 inline-flex items-center gap-1 disabled:opacity-50"
+                          title="Upload a fresh copy of this file so it can be downloaded and re-analyzed."
+                        >
+                          <Upload size={12} />
+                          {replacingAttId === att.id ? "Uploading..." : "Replace"}
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })}
