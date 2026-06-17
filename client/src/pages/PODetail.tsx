@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Send, AlertCircle, CheckCircle2, XCircle, FileText, ChevronDown, ChevronRight, Download } from "lucide-react";
+import { ArrowLeft, Send, AlertCircle, CheckCircle2, XCircle, FileText, ChevronDown, ChevronRight, Download, RefreshCw } from "lucide-react";
 
 interface POItem {
   itemCode?: string;
@@ -71,6 +71,8 @@ export default function PODetail() {
   const [showExtractedJson, setShowExtractedJson] = useState(false);
   const [offerSheetInput, setOfferSheetInput] = useState("");
   const [submittingOfferSheet, setSubmittingOfferSheet] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
+  const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`/api/purchase-orders/${id}`)
@@ -92,6 +94,27 @@ export default function PODetail() {
     const data = await r.json();
     setPo(data);
     setProcessing(false);
+  };
+
+  const handleReanalyze = async () => {
+    if (!po) return;
+    setReanalyzing(true);
+    setReanalyzeError(null);
+    try {
+      const res = await fetch(`/api/purchase-orders/${po.id}/reanalyze`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `Re-analyze failed (${res.status})`);
+      }
+      // Refetch the full detail so attachments, status, extracted data all update.
+      const r = await fetch(`/api/purchase-orders/${po.id}`);
+      const data = await r.json();
+      setPo(data);
+      setOfferSheetInput(data.offerSheetNumber || "");
+    } catch (e: any) {
+      setReanalyzeError(e?.message || "Re-analyze failed");
+    }
+    setReanalyzing(false);
   };
 
   const handleSubmitOfferSheet = async () => {
@@ -143,25 +166,43 @@ export default function PODetail() {
         Back to Purchase Orders
       </button>
 
-      <div className="flex items-center justify-between mb-6">
-        <div>
+      <div className="flex items-start justify-between mb-6 gap-4">
+        <div className="min-w-0">
           <h2 className="text-2xl font-bold text-gray-900">PO Detail</h2>
-          <p className="text-sm text-gray-500 mt-1">{po.subject}</p>
+          <p className="text-sm text-gray-500 mt-1 truncate">{po.subject}</p>
         </div>
-        {po.status === "reviewed" && (
+        <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={handleSendToSAP}
-            disabled={processing}
-            className="btn-primary"
+            onClick={handleReanalyze}
+            disabled={reanalyzing}
+            className="btn-secondary"
+            title="Re-run the AI on this record. Uses the stored attachment bytes when available, otherwise re-fetches the original email."
           >
-            <Send size={16} className="mr-2" />
-            {processing ? "Processing..." : "Create SAP SO"}
+            <RefreshCw size={16} className={`mr-2 ${reanalyzing ? "animate-spin" : ""}`} />
+            {reanalyzing ? "Re-analyzing..." : "Re-analyze"}
           </button>
-        )}
-        {po.status === "needs_offer_sheet" && (
-          <span className="status-badge bg-orange-100 text-orange-800">Needs Offer Sheet</span>
-        )}
+          {po.status === "reviewed" && (
+            <button
+              onClick={handleSendToSAP}
+              disabled={processing}
+              className="btn-primary"
+            >
+              <Send size={16} className="mr-2" />
+              {processing ? "Processing..." : "Create SAP SO"}
+            </button>
+          )}
+          {po.status === "needs_offer_sheet" && (
+            <span className="status-badge bg-orange-100 text-orange-800">Needs Offer Sheet</span>
+          )}
+        </div>
       </div>
+
+      {reanalyzeError && (
+        <div className="mb-6 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
+          <p className="text-sm text-red-700">{reanalyzeError}</p>
+        </div>
+      )}
 
       <div className={`mb-6 p-4 rounded-lg border flex items-start gap-3 ${isPO ? "bg-green-50 border-green-200" : "bg-amber-50 border-amber-200"}`}>
         {isPO ? (

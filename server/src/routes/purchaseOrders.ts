@@ -141,8 +141,19 @@ router.post("/:id/process", async (req, res) => {
   res.json(result[0]);
 });
 
-// Re-run AI analysis for an existing record by re-fetching the original email
-// (including attachments) so PDFs/images are re-checked with vision support.
+// Re-run AI analysis for an existing record.
+//
+// Priority order for the source of bytes:
+//   1. Stored attachment bytes (poAttachments.content) — preferred, because
+//      it tests the AI on the EXACT bytes that produced the original result.
+//      This is the diagnostic path: if a re-analyze of the same bytes now
+//      produces the correct extraction, we know the AI was wrong (prompt /
+//      DPI issue). If it still gives the wrong result, the bytes themselves
+//      are the problem and we need to look at the email fetch pipeline.
+//   2. Re-fetch from the original email account — only when no bytes are
+//      stored (legacy rows from before content was persisted).
+//   3. Stored text only — only for manual uploads with no bytes (very old
+//      rows). Will degrade to a text-only analysis.
 router.post("/:id/reanalyze", async (req, res) => {
   const id = Number(req.params.id);
   const po = await db.select().from(purchaseOrders).where(eq(purchaseOrders.id, id)).get();
@@ -153,13 +164,37 @@ router.post("/:id/reanalyze", async (req, res) => {
 
   let messageText = "";
   let attachments: AttachmentInput[] = [];
+  let source: "stored" | "email" | "text-only" = "text-only";
 
   try {
-    if (po.emailAccountId === 0) {
-      // Manual upload: original files are not retained, re-analyze stored text.
+    const storedAtts = await db
+      .select()
+      .from(poAttachments)
+      .where(eq(poAttachments.poId, id))
+      .all();
+    const storedWithBytes = storedAtts.filter((a) => !!a.content);
+
+    if (storedWithBytes.length > 0) {
+      source = "stored";
+      attachments = storedWithBytes.map((a) => ({
+        filename: a.filename,
+        mimeType: a.contentType,
+        data: Buffer.from(a.content!, "base64"),
+      }));
+      const combinedTexts: string[] = [];
+      for (const att of attachments) {
+        const text = await extractTextFromBuffer(att.data, att.mimeType);
+        if (text) combinedTexts.push(`--- Attachment: ${att.filename} ---\n${text}`);
+      }
+      messageText = combinedTexts.join("\n\n");
+    } else if (po.emailAccountId === 0) {
+      // Manual upload with no bytes — only stored text is available.
       const ai = po.aiAnalysis ? JSON.parse(po.aiAnalysis) : null;
       messageText = ai?.fullText || "";
+      source = "text-only";
     } else {
+      // Email row with no stored bytes — re-fetch from the inbox.
+      source = "email";
       const account = await db
         .select()
         .from(emailAccounts)
@@ -205,13 +240,29 @@ router.post("/:id/reanalyze", async (req, res) => {
       }));
     }
 
+    console.log(
+      `[reanalyze] PO #${id} source=${source} attachments=${attachments.length}`
+    );
     const analysis = await analyzeDocument(messageText, po.subject, attachments);
+
+    // Same status logic as upload route and email processor: promote the
+    // offer sheet into the top-level column and route the row to the right
+    // queue based on whether the AI found one.
+    let nextStatus: string;
+    if (!analysis.isPurchaseOrder) {
+      nextStatus = "detected";
+    } else if (analysis.offerSheetNumber) {
+      nextStatus = "processing";
+    } else {
+      nextStatus = "needs_offer_sheet";
+    }
 
     const result = await db
       .update(purchaseOrders)
       .set({
-        status: analysis.isPurchaseOrder ? "reviewed" : "detected",
+        status: nextStatus,
         confidence: analysis.confidence,
+        offerSheetNumber: analysis.offerSheetNumber || null,
         aiAnalysis: JSON.stringify({ fullText: messageText.substring(0, 10000) }),
         extractedData: JSON.stringify(analysis),
         updatedAt: new Date(),
