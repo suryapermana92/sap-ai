@@ -1,4 +1,5 @@
 import { Router } from "express";
+import multer from "multer";
 import { db } from "../db/index.js";
 import { purchaseOrders, poAttachments, emailAccounts } from "../db/schema.js";
 import { eq, desc, and } from "drizzle-orm";
@@ -8,6 +9,20 @@ import { analyzeDocument, AttachmentInput } from "../services/openai.js";
 import { extractTextFromBuffer } from "../services/documentExtractor.js";
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+const MAX_PERSIST_BYTES = 25 * 1024 * 1024;
+
+// Convert raw bytes to the base64 string we store in po_attachments.content,
+// returning null when the buffer is empty or too large to keep in SQLite.
+function bytesForDb(filename: string, buf: Buffer | null | undefined): string | null {
+  if (!buf || buf.length === 0) return null;
+  if (buf.length > MAX_PERSIST_BYTES) {
+    console.warn(`[purchaseOrders] not persisting "${filename}" (${buf.length} bytes, > ${MAX_PERSIST_BYTES})`);
+    return null;
+  }
+  return buf.toString("base64");
+}
 
 router.get("/", async (req, res) => {
   const pos = await db.select().from(purchaseOrders).orderBy(desc(purchaseOrders.createdAt)).all();
@@ -238,6 +253,37 @@ router.post("/:id/reanalyze", async (req, res) => {
         mimeType: att.mimeType,
         data: att.data,
       }));
+
+      // Backfill po_attachments for this legacy row so the next visit can
+      // download the file and re-analyses use the stored bytes path. Match
+      // by filename; if a row already exists with empty content, update it.
+      // Otherwise insert a fresh row so the attachment appears in the UI.
+      const existingRows = await db
+        .select()
+        .from(poAttachments)
+        .where(eq(poAttachments.poId, id))
+        .all();
+      for (const att of msg.attachments) {
+        const content = bytesForDb(att.filename, att.data);
+        if (!content) continue;
+        const existing = existingRows.find((r) => r.filename === att.filename);
+        if (existing) {
+          if (!existing.content) {
+            await db
+              .update(poAttachments)
+              .set({ content, size: att.size, contentType: att.mimeType })
+              .where(eq(poAttachments.id, existing.id));
+          }
+        } else {
+          await db.insert(poAttachments).values({
+            poId: id,
+            filename: att.filename,
+            contentType: att.mimeType,
+            size: att.size,
+            content,
+          });
+        }
+      }
     }
 
     console.log(
@@ -311,6 +357,55 @@ router.get("/:id/attachments/:attId/download", async (req, res) => {
   res.setHeader("Content-Length", String(buffer.length));
   res.send(buffer);
 });
+
+// Upload a fresh copy of an attachment file for legacy rows whose bytes were
+// never persisted (manual-upload rows from before content was stored, or email
+// rows whose source mailbox no longer has the message). Replaces the bytes
+// in-place on the matching po_attachments row, so the existing Download and
+// Re-analyze flows work without changing the rest of the schema.
+router.post(
+  "/:id/attachments/:attId/replace",
+  upload.single("file"),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    const attId = Number(req.params.attId);
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({ error: "No file uploaded" });
+      return;
+    }
+
+    const att = await db
+      .select()
+      .from(poAttachments)
+      .where(and(eq(poAttachments.id, attId), eq(poAttachments.poId, id)))
+      .get();
+    if (!att) {
+      res.status(404).json({ error: "Attachment not found" });
+      return;
+    }
+
+    const content = bytesForDb(file.originalname, file.buffer);
+    if (!content) {
+      res.status(400).json({ error: "File too large or empty" });
+      return;
+    }
+
+    const result = await db
+      .update(poAttachments)
+      .set({
+        filename: file.originalname,
+        contentType: file.mimetype,
+        size: file.size,
+        content,
+      })
+      .where(eq(poAttachments.id, attId))
+      .returning();
+
+    const { content: _omit, ...sanitized } = result[0];
+    res.json({ ...sanitized, hasContent: true });
+  }
+);
 
 router.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
