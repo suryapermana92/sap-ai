@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { Save, Trash2, Mail, Server, Link as LinkIcon } from "lucide-react";
+import {
+  Save,
+  Trash2,
+  Mail,
+  Server,
+  Link as LinkIcon,
+  CheckCircle2,
+  XCircle,
+  RefreshCw,
+} from "lucide-react";
 
 interface EmailAccount {
   id: number;
@@ -14,7 +23,14 @@ interface SAPConnection {
   serviceLayerUrl: string;
   companyDB: string;
   isActive: boolean;
+  lastConnectedAt?: string | null;
 }
+
+type ConnectionTestState = {
+  status: "idle" | "testing" | "ok" | "failed";
+  message?: string;
+  testedAt?: number;
+};
 
 export default function SettingsPage() {
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
@@ -34,6 +50,9 @@ export default function SettingsPage() {
     username: "",
     password: "",
   });
+  const [testStates, setTestStates] = useState<Record<number, ConnectionTestState>>({});
+  const [sapSaveError, setSapSaveError] = useState<string | null>(null);
+  const [sapSaving, setSapSaving] = useState(false);
 
   const fetchData = () => {
     fetch("/api/email/accounts")
@@ -69,13 +88,24 @@ export default function SettingsPage() {
 
   const addSAPConnection = async (e: React.FormEvent) => {
     e.preventDefault();
-    await fetch("/api/sap/connections", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sapForm),
-    });
-    setSapForm({ name: "", serviceLayerUrl: "", companyDB: "", username: "", password: "" });
-    fetchData();
+    setSapSaveError(null);
+    setSapSaving(true);
+    try {
+      const res = await fetch("/api/sap/connections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sapForm),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body?.error || `Save failed (${res.status})`);
+      }
+      setSapForm({ name: "", serviceLayerUrl: "", companyDB: "", username: "", password: "" });
+      fetchData();
+    } catch (err: any) {
+      setSapSaveError(err?.message || "Save failed");
+    }
+    setSapSaving(false);
   };
 
   const deleteEmail = async (id: number) => {
@@ -86,6 +116,29 @@ export default function SettingsPage() {
   const deleteSAP = async (id: number) => {
     await fetch(`/api/sap/connections/${id}`, { method: "DELETE" });
     fetchData();
+  };
+
+  const testSAP = async (id: number) => {
+    setTestStates((prev) => ({ ...prev, [id]: { status: "testing" } }));
+    try {
+      const res = await fetch(`/api/sap/connections/${id}/test`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      const ok = res.ok && body?.success === true;
+      setTestStates((prev) => ({
+        ...prev,
+        [id]: {
+          status: ok ? "ok" : "failed",
+          message: body?.message || (ok ? "Connected" : `HTTP ${res.status}`),
+          testedAt: Date.now(),
+        },
+      }));
+      if (ok) fetchData();
+    } catch (e: any) {
+      setTestStates((prev) => ({
+        ...prev,
+        [id]: { status: "failed", message: e?.message || "Network error", testedAt: Date.now() },
+      }));
+    }
   };
 
   return (
@@ -170,18 +223,64 @@ export default function SettingsPage() {
 
             {sapConnections.length > 0 && (
               <div className="mb-4 space-y-2">
-                {sapConnections.map((conn) => (
-                  <div key={conn.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">{conn.name}</p>
-                      <p className="text-xs text-gray-500">{conn.serviceLayerUrl}</p>
-                      <p className="text-xs text-gray-400">DB: {conn.companyDB}</p>
+                {sapConnections.map((conn) => {
+                  const ts = testStates[conn.id];
+                  const lastConnected = conn.lastConnectedAt
+                    ? new Date(conn.lastConnectedAt).toLocaleString()
+                    : null;
+                  return (
+                    <div key={conn.id} className="p-3 bg-gray-50 rounded-lg">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-gray-900">{conn.name}</p>
+                          <p className="text-xs text-gray-500 truncate">{conn.serviceLayerUrl}</p>
+                          <p className="text-xs text-gray-400">DB: {conn.companyDB}</p>
+                          {lastConnected && (
+                            <p className="text-xs text-gray-400 mt-1">
+                              Last connected: {lastConnected}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => testSAP(conn.id)}
+                            disabled={ts?.status === "testing"}
+                            className="text-xs px-2 py-1 rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 inline-flex items-center gap-1 disabled:opacity-50"
+                            title="Run /Login against the SAP B1 Service Layer"
+                          >
+                            <RefreshCw
+                              size={12}
+                              className={ts?.status === "testing" ? "animate-spin" : ""}
+                            />
+                            {ts?.status === "testing" ? "Testing..." : "Test"}
+                          </button>
+                          <button
+                            onClick={() => deleteSAP(conn.id)}
+                            className="text-red-600 hover:text-red-900"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                      {ts && ts.status !== "idle" && ts.status !== "testing" && (
+                        <div
+                          className={`mt-2 flex items-start gap-2 text-xs px-2 py-1.5 rounded ${
+                            ts.status === "ok"
+                              ? "bg-green-50 text-green-700 border border-green-200"
+                              : "bg-red-50 text-red-700 border border-red-200"
+                          }`}
+                        >
+                          {ts.status === "ok" ? (
+                            <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
+                          ) : (
+                            <XCircle size={12} className="mt-0.5 shrink-0" />
+                          )}
+                          <span className="break-words">{ts.message}</span>
+                        </div>
+                      )}
                     </div>
-                    <button onClick={() => deleteSAP(conn.id)} className="text-red-600 hover:text-red-900">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -209,9 +308,27 @@ export default function SettingsPage() {
                   <input type="password" className="input" value={sapForm.password} onChange={(e) => setSapForm({ ...sapForm, password: e.target.value })} required />
                 </div>
               </div>
-              <button type="submit" className="btn-primary w-full">
+              {sapSaveError && (
+                <div className="p-3 rounded-lg border border-red-200 bg-red-50 text-sm text-red-700 flex items-start gap-2">
+                  <XCircle size={14} className="mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-medium">Could not save</p>
+                    <p className="break-words">{sapSaveError}</p>
+                    <p className="text-xs text-red-600 mt-1">
+                      The server tries to log in to SAP before saving. If the Service Layer
+                      isn't reachable from this machine (firewall, VPN required, server down),
+                      the save is rejected.
+                    </p>
+                  </div>
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={sapSaving}
+                className="btn-primary w-full disabled:opacity-50"
+              >
                 <Save size={16} className="mr-2" />
-                Add SAP Connection
+                {sapSaving ? "Testing & saving..." : "Add SAP Connection"}
               </button>
             </form>
           </div>

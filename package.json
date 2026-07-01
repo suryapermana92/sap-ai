@@ -7,9 +7,9 @@
     "client"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
-    "build": "npm run build -w server && npm run build -w client",
-    "start": "npm run start -w server"
+    "dev": "node api.js && concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "node api.js && npm run build -w server && npm run build -w client",
+    "start": "node api.js && npm run start -w server"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
